@@ -23,9 +23,10 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 const ID = 'fleet-chip'
-// Подпись-якорь в статусбаре: 🤖 (робот) — выбран владельцем 17.11.2026.
-// Меняется одной строкой: 'fleet', 'воркеры', '⌘'.
-const LABEL = '🤖'
+// Подпись-якорь в статусбаре: монохромный кодикон `hubot` — выбран владельцем 19.11.2026
+// (был эмодзи 🤖 — единственное цветное пятно в чипе; стало в тон ▸ и ‖).
+// Меняется одной строкой: 'organization', 'person', 'chip', 'circuit-board'.
+const LABEL = 'hubot'
 const REFRESH_MS = 5000
 // Что поднимает чип в «требуют внимания». Отложенные (blocked_wait) — намеренно НЕ здесь:
 // карточка, которую паркуют до своего часа, не должна держать чип жёлтым.
@@ -188,7 +189,7 @@ const BUCKET_GLYPH = { bad: '!', work: '▸', wait: '‖' }
 // `agent`, фоновый процесс — `server-process`. Это кодиконы Hermes Desktop (шрифт
 // @vscode/codicons подключён глобально в styles.css), поэтому копировать SVG не нужно:
 // классы `codicon codicon-<name>` дают ровно ту же картинку, что и в приложении.
-const KIND_ICON = { agent: 'agent', proc: 'server-process' }
+const KIND_ICON = { agent: 'agent', proc: 'server-process', bot: 'hubot' }
 
 function KindIcon({ kind, className }) {
   const name = KIND_ICON[kind] || KIND_ICON.proc
@@ -577,9 +578,9 @@ function Chip({ rest }) {
             'hover:bg-(--chrome-action-hover) hover:text-foreground'
           ),
           children: jsxs('span', {
-            className: 'inline-flex items-baseline gap-1.5',
+            className: 'inline-flex items-center gap-1.5',
             children: [
-              jsx('span', { children: LABEL }),
+              LABEL ? jsx(KindIcon, { kind: 'bot', className: 'opacity-80 self-center' }) : null,
               groups.length
                 ? jsx('span', {
                     className: 'inline-flex items-baseline gap-1.5 tabular-nums',
