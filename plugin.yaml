@@ -1,0 +1,47 @@
+name: fleet-chip
+version: "0.2.0"
+manifest_version: 2
+api_version: 1
+kind: standalone
+description: >
+  Kanban workers + cron health in one read-only snapshot. Signature case: card in
+  running, fresh heartbeat, api_call_count = 0 — a worker that never reached the model.
+author: ""
+tags: [kanban, cron, monitoring, read-only]
+provides_tools:
+  - fleet_status
+python_dependencies: []
+config_schema:
+  language:
+    type: string
+    choices: [auto, ru, en]
+    default: auto
+    description: "auto | ru | en — auto = system locale"
+  ready_minutes:
+    type: int
+    default: 15
+    description: "ready/todo, N min → not_started"
+  silent_minutes:
+    type: int
+    default: 3
+    description: "running, no heartbeat N min → running_silent"
+  model_minutes:
+    type: int
+    default: 2
+    description: "running, api_call_count = 0 N min → never_model"
+  lost_minutes:
+    type: int
+    default: 20
+    description: "running, no heartbeat N min → lost"
+  done_hours:
+    type: int
+    default: 6
+    description: "N h — window of the done counter"
+  wait_days:
+    type: int
+    default: 14
+    description: "parked [wait]/scheduled N days → parked_stale"
+  board_rows:
+    type: int
+    default: 100
+    description: "max rows in the snapshot"

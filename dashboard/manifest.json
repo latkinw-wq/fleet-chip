@@ -1,0 +1,12 @@
+{
+  "name": "fleet-chip",
+  "label": "Fleet",
+  "description": "Read-only kanban worker + cron health snapshot for the Desktop status-bar chip.",
+  "icon": "Satellite",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/fleet",
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}
