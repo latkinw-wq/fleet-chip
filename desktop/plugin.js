@@ -70,7 +70,8 @@ const TEXT = {
     },
     untitled: '(без названия)',
     title: 'Приборка',
-    bgTitle: 'фон',
+    bgAgents: 'субагенты',
+    bgProcs: 'процессы',
     kindProc: 'процесс',
     kindAgent: 'субагент',
     bgEmpty: 'фоновых задач нет',
@@ -93,7 +94,8 @@ const TEXT = {
     tipLive: (id, calls) => ` (${id}, ${calls} выз.)`,
     tipWait: n => `отложено: ${n}`,
     tipCron: (n, bad) => `кроны: ${n}, сбоев ${bad}`,
-    tipBg: (n, bad) => (bad ? `фон: ${n}, внимание ${bad}` : `фон: ${n}`),
+    tipAgents: (n, bad) => (bad ? `субагенты: ${n}, внимание ${bad}` : `субагенты: ${n}`),
+    tipProcs: (n, bad) => (bad ? `процессы: ${n}, внимание ${bad}` : `процессы: ${n}`),
     bgDone: n => `фон закрыто: ${n}`,
     tipQuiet: 'всё тихо',
     tipHint: 'клик — приборка, правый клик — обновить'
@@ -119,7 +121,8 @@ const TEXT = {
     },
     untitled: '(untitled)',
     title: 'Fleet',
-    bgTitle: 'background',
+    bgAgents: 'subagents',
+    bgProcs: 'processes',
     kindProc: 'process',
     kindAgent: 'subagent',
     bgEmpty: 'no background tasks',
@@ -142,7 +145,8 @@ const TEXT = {
     tipLive: (id, calls) => ` (${id}, ${calls} calls)`,
     tipWait: n => `waiting: ${n}`,
     tipCron: (n, bad) => `cron: ${n}, failing ${bad}`,
-    tipBg: (n, bad) => (bad ? `background: ${n}, needs attention ${bad}` : `background: ${n}`),
+    tipAgents: (n, bad) => (bad ? `subagents: ${n}, needs attention ${bad}` : `subagents: ${n}`),
+    tipProcs: (n, bad) => (bad ? `processes: ${n}, needs attention ${bad}` : `processes: ${n}`),
     bgDone: n => `background done: ${n}`,
     tipQuiet: 'all quiet',
     tipHint: 'click — the board, right click — refresh'
@@ -178,12 +182,26 @@ const STATE_ORDER = [
 // Три группы вместо десяти состояний: в чипе глиф обозначает ГРУППУ, а не состояние.
 // Символы — монохромные (не эмодзи): ⏸/▶ имеют emoji-presentation и в статусбаре
 // красятся системным шрифтом (синий «пауза»), поэтому взяты текстовые ▸ и ‖.
-const BUCKET_GLYPH = { bad: '!', work: '▸', wait: '‖', bg: '⚙' }
+const BUCKET_GLYPH = { bad: '!', work: '▸', wait: '‖' }
+
+// Фон различается иконкой, как в стеке статусов композера: субагент — шестиугольник
+// `agent`, фоновый процесс — `server-process`. Это кодиконы Hermes Desktop (шрифт
+// @vscode/codicons подключён глобально в styles.css), поэтому копировать SVG не нужно:
+// классы `codicon codicon-<name>` дают ровно ту же картинку, что и в приложении.
+const KIND_ICON = { agent: 'agent', proc: 'server-process' }
+
+function KindIcon({ kind, className }) {
+  const name = KIND_ICON[kind] || KIND_ICON.proc
+  return jsx('i', {
+    className: cn('codicon', `codicon-${name}`, 'shrink-0 leading-none', className),
+    'aria-hidden': 'true',
+    style: { fontSize: '0.8rem' }
+  })
+}
 
 function bucketOf(state) {
   if (state === 'working') return 'work'
   if (state === 'blocked_wait' || state === 'parked') return 'wait'
-  if (String(state).startsWith('bg_')) return 'bg'
   return 'bad'
 }
 
@@ -206,17 +224,27 @@ function counts(board) {
   const problems = PROBLEM_STATES.reduce((n, s) => n + (chip[s] || 0), 0)
   const work = chip.working || 0
   const wait = (chip.blocked_wait || 0) + (chip.parked || 0)
-  // Фон живёт отдельным списком, а не в chip: у него свои состояния.
+  // Фон живёт отдельным списком, а не в chip: у него свои состояния. Субагенты и
+  // процессы считаются раздельно — у них разные иконки и разный смысл «залип».
   const bgRows = (board && board.background && board.background.rows) || []
-  const bgBad = bgRows.filter(r => BG_PROBLEM_STATES.includes(r.state)).length
-  return { chip, problems, work, wait, bg: bgRows.length, bgBad }
+  const bad = kind => bgRows.filter(r => r.kind === kind && BG_PROBLEM_STATES.includes(r.state)).length
+  return {
+    chip,
+    problems,
+    work,
+    wait,
+    agents: bgRows.filter(r => r.kind === 'agent').length,
+    agentsBad: bad('agent'),
+    procs: bgRows.filter(r => r.kind !== 'agent').length,
+    procsBad: bad('proc')
+  }
 }
 
 // Тултип бесплатен по ширине, поэтому вся детализация живёт здесь, а чип молчит.
 function tipText(board, error, lang) {
   const t = text(lang)
   if (!board) return error ? `fleet-chip: ${error}` : `fleet-chip: ${t.loading}`
-  const { problems, work, wait, bg, bgBad } = counts(board)
+  const { problems, work, wait, agents, agentsBad, procs, procsBad } = counts(board)
   const rows = board.rows || []
   const parts = []
   const bad = rows.filter(r => PROBLEM_STATES.includes(r.state)).slice(0, 3)
@@ -228,10 +256,11 @@ function tipText(board, error, lang) {
     parts.push(t.tipWorking(work, live ? t.tipLive(live.id, live.api_calls ?? '?') : ''))
   }
   if (wait) parts.push(t.tipWait(wait))
-  if (bg) parts.push(t.tipBg(bg, bgBad))
+  if (agents) parts.push(t.tipAgents(agents, agentsBad))
+  if (procs) parts.push(t.tipProcs(procs, procsBad))
   const cron = board.cron || {}
   parts.push(t.tipCron(cron.jobs || 0, (cron.failing || []).length))
-  if (!problems && !work && !wait && !bg) parts.unshift(t.tipQuiet)
+  if (!problems && !work && !wait && !agents && !procs) parts.unshift(t.tipQuiet)
   parts.push(t.tipHint)
   return parts.join(' · ')
 }
@@ -275,13 +304,18 @@ function useFleet(rest) {
 function StatePill({ state, lang }) {
   const problem = isProblem(state)
   const t = text(lang)
+  // У строк фона глиф группы не нужен: иконку вида (шестиугольник / папка с шестернёй)
+  // рисует сама строка, а группа в чипе — своя.
+  const showGlyph = !String(state).startsWith('bg_')
   return jsxs('span', {
     className: cn(
       'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] leading-none',
       problem ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'
     ),
     children: [
-      jsx('span', { key: 'g', className: 'font-mono', children: BUCKET_GLYPH[bucketOf(state)] }),
+      showGlyph
+        ? jsx('span', { key: 'g', className: 'font-mono', children: BUCKET_GLYPH[bucketOf(state)] })
+        : null,
       jsx('span', { key: 'l', children: t.states[state] || state })
     ]
   })
@@ -339,9 +373,15 @@ function BgRow({ row, lang }) {
       jsxs('div', {
         className: 'flex min-w-0 flex-col gap-0.5',
         children: [
-          jsx('span', {
-            className: cn('truncate font-mono text-[0.6875rem]', problem ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'),
-            children: row.id || '—'
+          jsxs('span', {
+            className: 'flex min-w-0 items-center gap-1',
+            children: [
+              jsx(KindIcon, { kind: row.kind, className: problem ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)' }),
+              jsx('span', {
+                className: cn('truncate font-mono text-[0.6875rem]', problem ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'),
+                children: row.id || '—'
+              })
+            ]
           }),
           jsx(StatePill, { state: row.state, lang })
         ]
@@ -377,6 +417,12 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
   const srcErrors = (board && board.sources_errors) || []
   const bgRows = ((board && board.background && board.background.rows) || []).slice()
   const bgChip = (board && board.background && board.background.chip) || {}
+  // Две секции, как в стеке статусов композера: субагенты и фоновые процессы не
+  // сваливаются в один список — у них разные иконки и разные причины «залип».
+  const bgGroups = [
+    { kind: 'agent', label: t.bgAgents, rows: bgRows.filter(r => r.kind === 'agent') },
+    { kind: 'proc', label: t.bgProcs, rows: bgRows.filter(r => r.kind !== 'agent') }
+  ].filter(g => g.rows.length)
 
   return jsxs('div', {
     className: cn(
@@ -431,22 +477,24 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
             key: 'bg',
             className: 'mt-2 border-t border-(--ui-stroke-secondary) pt-1',
             children: [
-              jsxs('div', {
-                key: 'h',
-                className: 'flex items-center gap-2 py-1 text-[0.6875rem] text-(--ui-text-quaternary)',
-                children: [
-                  jsx('span', { className: 'font-mono', children: BUCKET_GLYPH.bg }),
-                  jsx('span', { children: t.bgTitle }),
-                  jsx('span', { className: 'tabular-nums', children: bgRows.length })
-                ]
-              }),
-              bgRows.length
-                ? jsx('div', {
-                    key: 'rows',
-                    children: bgRows.map(r => jsx(BgRow, { row: r, lang }, `${r.profile}:${r.id}`))
-                  })
+              bgGroups.length
+                ? bgGroups.map(grp =>
+                    jsxs('div', {
+                      key: grp.kind,
+                      children: [
+                        jsxs('div', {
+                          className: 'flex items-center gap-1.5 py-1 text-[0.6875rem] text-(--ui-text-quaternary)',
+                          children: [
+                            jsx(KindIcon, { kind: grp.kind }),
+                            jsx('span', { children: grp.label }),
+                            jsx('span', { className: 'tabular-nums', children: grp.rows.length })
+                          ]
+                        }),
+                        grp.rows.map(r => jsx(BgRow, { row: r, lang }, `${r.profile}:${r.id}`))
+                      ]
+                    })
+                  )
                 : jsx('div', {
-                    key: 'empty',
                     className: 'pb-2 text-[0.6875rem] text-(--ui-text-quaternary)',
                     children: t.bgEmpty
                   })
@@ -468,7 +516,7 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
                 className: bgRows.some(r => BG_PROBLEM_STATES.includes(r.state))
                   ? 'text-(--ui-accent)'
                   : undefined,
-                children: t.tipBg(bgRows.length, bgRows.filter(r => BG_PROBLEM_STATES.includes(r.state)).length)
+                children: bgGroups.map(g => `${g.label}: ${g.rows.length}`).join(', ')
               })
             : null,
           bgChip.done_6h
@@ -486,7 +534,7 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
 function Chip({ rest }) {
   const { board, error, at, refresh } = useFleet(rest)
   const [open, setOpen] = useState(false)
-  const { problems, work, wait, bg, bgBad } = counts(board)
+  const { problems, work, wait, agents, agentsBad, procs, procsBad } = counts(board)
   const lang = langOf(board)
 
   const onClick = () => {
@@ -495,18 +543,20 @@ function Chip({ rest }) {
   }
 
   // Компактная подпись: группы, нули не печатаются, порядок фиксирован.
-  //   всё тихо              → fleet
-  //   работают              → fleet ▸1
-  //   проблемы              → fleet !2   (акцентом)
-  //   фон                   → fleet ⚙1   (акцентом, если в фоне сбой)
-  //   всё сразу             → fleet !1 ▸2 ‖1 ⚙1
-  // Карточки и фон считаются раздельно: у фона нет heartbeat и вызовов модели,
-  // поэтому его цифра не сливается с карточками — иначе не понять, где именно сбой.
+  //   всё тихо   → fleet
+  //   работают   → fleet ▸1
+  //   проблемы   → fleet !2          (акцентом)
+  //   субагенты  → fleet ⌬1          (иконка agent, акцентом при сбое)
+  //   процессы   → fleet 🗀1          (иконка server-process)
+  //   всё сразу  → fleet !1 ▸2 ‖1 ⌬1 🗀1
+  // Карточки, субагенты и процессы считаются раздельно: у фона нет heartbeat и вызовов
+  // модели, поэтому его цифры не сливаются с карточками — иначе не понять, где сбой.
   const groups = [
-    { key: 'bad', n: problems },
+    { key: 'bad', n: problems, bad: problems > 0 },
     { key: 'work', n: work },
     { key: 'wait', n: wait },
-    { key: 'bg', n: bg }
+    { key: 'agent', n: agents, bad: agentsBad > 0 },
+    { key: 'proc', n: procs, bad: procsBad > 0 }
   ].filter(g => g.n > 0)
 
   return jsxs('span', {
@@ -523,7 +573,7 @@ function Chip({ rest }) {
           },
           className: cn(
             'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] transition-colors',
-            problems || bgBad ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)',
+            problems || agentsBad || procsBad ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)',
             'hover:bg-(--chrome-action-hover) hover:text-foreground'
           ),
           children: jsxs('span', {
@@ -535,9 +585,11 @@ function Chip({ rest }) {
                     className: 'inline-flex items-baseline gap-1.5 tabular-nums',
                     children: groups.map(g =>
                       jsxs('span', {
-                        className: (g.key === 'bad' || (g.key === 'bg' && bgBad)) ? 'font-medium' : undefined,
+                        className: cn('inline-flex items-baseline gap-0.5', g.bad && 'font-medium'),
                         children: [
-                          jsx('span', { className: 'font-mono opacity-70', children: BUCKET_GLYPH[g.key] }),
+                          BUCKET_GLYPH[g.key]
+                            ? jsx('span', { className: 'font-mono opacity-70', children: BUCKET_GLYPH[g.key] })
+                            : jsx(KindIcon, { kind: g.key, className: 'opacity-70 self-center' }),
                           jsx('span', { children: String(g.n) })
                         ]
                       }, g.key)
