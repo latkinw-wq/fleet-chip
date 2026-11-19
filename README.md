@@ -1,7 +1,7 @@
 # fleet-chip
 
-Read-only watch for kanban workers and cron jobs, as a chip in the Hermes Desktop status bar.
-Click the chip for the full board, right click to refresh.
+Read-only watch for kanban workers, cron jobs, background processes and delegated subagents, as a
+chip in the Hermes Desktop status bar. Click the chip for the full board, right click to refresh.
 
 The failure mode it catches: a card in `running` with a live heartbeat whose session has
 `api_call_count = 0` — a worker process is up, but it never reached the model.
