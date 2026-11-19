@@ -42,9 +42,12 @@ Liveness is probed without `subprocess` and without dependencies: `OpenProcess` 
 keeps its checkpoint entry until the registry writes again — the plugin shows it as `bg_lost`
 ("the registry missed the exit") instead of hiding it.
 
-In the chip the background layer has its own `⚙` group: cards and background never merge into one
-number, otherwise the source of a failure is unknown. Finished subagents never become rows; they
-only count in `done_6h`.
+In the chip subagents and processes get their own groups with the same icons the composer status
+stack draws: `codicon-agent` (the hexagon) and `codicon-server-process` (the folder with a gear).
+Those are Hermes Desktop's own codicons — `@vscode/codicons` is loaded globally by the app, so the
+plugin uses the same classes instead of copying SVGs. Cards, subagents and processes never merge
+into one number, otherwise the source of a failure is unknown. Finished subagents never become
+rows; they only count in `done_6h`.
 
 ## States
 
