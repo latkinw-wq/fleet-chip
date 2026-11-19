@@ -1,6 +1,7 @@
 """Тесты снимка fleet_data на синтетической базе (все источники — временные файлы)."""
 
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -240,7 +241,12 @@ def test_chip_and_cron(snapshot):
     }
     assert snapshot["cron"] == {"jobs": 4, "failing": ["def", "jkl"], "delivery_failed_24h": 1}
     assert snapshot["sources_errors"] == []
-    assert set(snapshot) == {"generated_at", "lang", "chip", "rows", "cron", "sources_errors"}
+    assert set(snapshot) == {"generated_at", "lang", "chip", "rows", "cron", "background",
+                             "sources_errors"}
+    # Фонов в этой фикстуре нет: слой не выдумывает строк, когда источников нет.
+    assert snapshot["background"]["rows"] == []
+    assert snapshot["background"]["chip"] == {"bg_running": 0, "bg_silent": 0, "bg_lost": 0,
+                                              "bg_unknown": 0, "done_6h": 0}
 
 
 def test_broken_db_is_a_source_error(tmp_path, monkeypatch):
@@ -329,3 +335,120 @@ def test_language_catalog_is_complete():
     assert not [k for k, v in catalog["en"].items() if not str(v).strip()]
     # незнакомый язык не должен ронять отрисовку
     assert fleet_data._i18n().t("xx", "lost_reaped") == catalog["en"]["lost_reaped"]
+
+
+# --------------------------------------------------------------------------- фон: процессы и субагенты
+
+DEAD_PID = 4_000_000  # заведомо несуществующий: pid на Windows доходят до сотен тысяч
+
+
+def _bg_home(tmp_path: Path) -> Path:
+    """Домашний каталог с чекпоинтом процессов и записями делегирований."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    (home / "processes.json").write_text(
+        json.dumps(
+            [
+                {"session_id": "proc_alive", "pid": os.getpid(), "pid_scope": "host",
+                 "command": "python -m http.server 8080", "started_at": NOW - 7 * MIN,
+                 "notify_on_complete": True},
+                {"session_id": "proc_dead", "pid": DEAD_PID, "pid_scope": "host",
+                 "command": "1cv8.exe ENTERPRISE /F\"D:/base\"", "started_at": NOW - 90 * MIN},
+                {"session_id": "proc_nopid", "pid": None, "command": "npm run dev"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    state = home / "profiles" / "dev" / "state.db"
+    _mk(
+        state,
+        [
+            ("CREATE TABLE async_delegations (delegation_id TEXT PRIMARY KEY, state TEXT,"
+             " dispatched_at REAL, completed_at REAL, task_json TEXT, owner_pid INTEGER)", ()),
+            ("INSERT INTO async_delegations VALUES (?,?,?,?,?,?)",
+             ("d_run", "running", NOW - 5 * MIN, None, json.dumps({"goal": "Собрать отчёт"}), os.getpid())),
+            ("INSERT INTO async_delegations VALUES (?,?,?,?,?,?)",
+             ("d_stall", "stalling", NOW - 40 * MIN, None, json.dumps({"goal": "Проверить 1С"}), os.getpid())),
+            ("INSERT INTO async_delegations VALUES (?,?,?,?,?,?)",
+             ("d_dead", "running", NOW - 60 * MIN, None, json.dumps({"goals": ["Сделать A", "Сделать B"]}),
+              DEAD_PID)),
+            ("INSERT INTO async_delegations VALUES (?,?,?,?,?,?)",
+             ("d_done", "completed", NOW - 50 * MIN, NOW - 10 * MIN, "{}", os.getpid())),
+            ("INSERT INTO async_delegations VALUES (?,?,?,?,?,?)",
+             ("d_old", "completed", NOW - 3000 * MIN, NOW - 2000 * MIN, "{}", os.getpid())),
+        ],
+    )
+    return home
+
+
+@pytest.fixture()
+def bg_snapshot(tmp_path, monkeypatch):
+    home = _bg_home(tmp_path)
+    monkeypatch.setattr(fleet_data, "_home", lambda: home)
+    return fleet_data.board({"language": "ru"})
+
+
+def _bg_states(snap):
+    return {row["id"]: row for row in snap["background"]["rows"]}
+
+
+def test_background_processes(bg_snapshot):
+    rows = _bg_states(bg_snapshot)
+    assert rows["proc_alive"]["kind"] == "proc"
+    assert rows["proc_alive"]["state"] == "bg_running"
+    assert rows["proc_alive"]["profile"] == "default"
+    assert rows["proc_alive"]["notify"] is True
+    assert "жив" in rows["proc_alive"]["hint"]
+    # Запись осталась, процесса нет — тот же класс, что `lost` у карточки.
+    assert rows["proc_dead"]["state"] == "bg_lost"
+    assert str(DEAD_PID) in rows["proc_dead"]["hint"]
+    # PID не записан — честное «не проверить», а не выдуманное «работает».
+    assert rows["proc_nopid"]["state"] == "bg_unknown"
+
+
+def test_background_agents(bg_snapshot):
+    rows = _bg_states(bg_snapshot)
+    assert rows["d_run"]["state"] == "bg_running"
+    assert rows["d_run"]["title"] == "Собрать отчёт"
+    assert rows["d_run"]["profile"] == "dev"
+    assert rows["d_stall"]["state"] == "bg_silent"
+    assert "залип" in rows["d_stall"]["hint"]
+    # Владелец делегирования мёртв: запись живёт, завершения не будет.
+    assert rows["d_dead"]["state"] == "bg_lost"
+    assert rows["d_dead"]["title"].startswith("Сделать A") and "(+1)" in rows["d_dead"]["title"]
+    # Завершённые — не строки: свежие идут в счётчик, старые не видит никто.
+    assert "d_done" not in rows and "d_old" not in rows
+
+
+def test_background_chip_and_order(bg_snapshot):
+    chip = bg_snapshot["background"]["chip"]
+    assert chip == {"bg_running": 2, "bg_silent": 1, "bg_lost": 2, "bg_unknown": 1, "done_6h": 1}
+    states = [row["state"] for row in bg_snapshot["background"]["rows"]]
+    # Проблемные первыми, работающие — последними.
+    assert states == sorted(states, key=fleet_data.BG_ORDER.index)
+
+
+def test_background_in_fleet_text(bg_snapshot):
+    text = fleet_data.render_text(bg_snapshot)
+    assert "фон, задач: 6" in text
+    assert "Собрать отчёт" in text and "1cv8.exe" in text
+
+
+def test_pid_probe_is_honest():
+    assert fleet_data._pid_alive(os.getpid()) is True
+    assert fleet_data._pid_alive(DEAD_PID) is False
+    assert fleet_data._pid_alive(None) is None
+    assert fleet_data._pid_alive("не pid") is None
+    assert fleet_data._pid_alive(0) is None
+
+
+def test_broken_checkpoint_is_a_source_error(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    broken = home / "processes.json"
+    broken.write_text("{это не json", encoding="utf-8")
+    monkeypatch.setattr(fleet_data, "_home", lambda: home)
+    snap = fleet_data.board({"language": "ru"})
+    assert snap["background"]["rows"] == []
+    assert any(err["path"] == str(broken) for err in snap["sources_errors"])

@@ -54,6 +54,15 @@ _STRINGS = {
         "why_scheduled": "status scheduled",
         # --- not started ---
         "not_started": "не стартовала: %.0f мин без движения",
+        # --- background: processes and delegated subagents ---
+        "bg_no_title": "(без описания)",
+        "bg_proc_running": "фон: процесс %s жив, идёт %.0f мин",
+        "bg_proc_running_noage": "фон: процесс %s жив",
+        "bg_proc_lost": "фон: процесса %s уже нет, запись осталась",
+        "bg_proc_unknown": "фон: процесс %s не проверить",
+        "bg_agent_running": "фон: субагент работает %.0f мин",
+        "bg_agent_stalled": "фон: субагент залип %.0f мин",
+        "bg_agent_lost": "фон: запись субагента (%s) без завершения — владелец умер",
         # --- /fleet text ---
         "render_header": (
             "🛰 FLEET · работают {working} · тишина {running_silent} · без модели {never_model}"
@@ -67,6 +76,8 @@ _STRINGS = {
         "render_cron": "   кроны: %s",
         "render_failing": " · сбоят: %s",
         "render_delivery": " · недоставок за 24ч: %s",
+        "render_bg_header": "   фон, задач: %s",
+        "render_bg_row": "   %s %s · %s",
         "render_error": "   ⚠ %s — %s",
         "no_assignee": "—",
     },
@@ -97,6 +108,15 @@ _STRINGS = {
         "why_scheduled": "native scheduled status",
         # --- not started ---
         "not_started": "never started: %.0f min without movement",
+        # --- background: processes and delegated subagents ---
+        "bg_no_title": "(unnamed)",
+        "bg_proc_running": "background: process %s is alive, running %.0f min",
+        "bg_proc_running_noage": "background: process %s is alive",
+        "bg_proc_lost": "background: process %s is gone, the record stayed behind",
+        "bg_proc_unknown": "background: process %s cannot be probed",
+        "bg_agent_running": "background: subagent working %.0f min",
+        "bg_agent_stalled": "background: subagent stalled %.0f min",
+        "bg_agent_lost": "background: subagent record (%s) never completed — its owner died",
         # --- /fleet text ---
         "render_header": (
             "🛰 FLEET · working {working} · silent {running_silent} · no model {never_model}"
@@ -110,6 +130,8 @@ _STRINGS = {
         "render_cron": "   cron: %s",
         "render_failing": " · failing: %s",
         "render_delivery": " · undelivered in 24h: %s",
+        "render_bg_header": "   background tasks: %s",
+        "render_bg_row": "   %s %s · %s",
         "render_error": "   ⚠ %s — %s",
         "no_assignee": "—",
     },

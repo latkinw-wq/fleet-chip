@@ -18,6 +18,33 @@ exception.
 | `profiles/*/state.db` | `api_call_count`, `message_count`, model of the worker's session |
 | `kanban.db` → `task_events` | session binding, last block reason, last event per card |
 | `cron/jobs.json`, `cron/executions.db` | cron jobs and the outcome of their last run |
+| `<home>/processes.json` (every profile) | background processes: command, PID, start time |
+| `state.db` → `async_delegations` | delegated subagents (`delegate_task`): state, goal, owner |
+
+## Background: processes and subagents
+
+A separate layer. What Desktop shows in one session's composer status stack, this collects
+across every profile at once. A background row is `kind` (`proc` or `agent`), `profile`,
+`state`, `age_min`, `hint`.
+
+Background work has no heartbeat and no model-call counter; the only honest signal is whether the
+process is alive:
+
+| State | Rule | Counted as a problem |
+|---|---|---|
+| `bg_running` | the process PID is alive (or the record's owner is alive with state `running`/`finalizing`) | no |
+| `bg_silent` | the subagent record is in state `stalling` | yes |
+| `bg_lost` | the process is gone but its record stayed; or a subagent record never completed and its owner died | yes |
+| `bg_unknown` | no PID recorded or it cannot be probed — "not sure", never "working" | yes |
+
+Liveness is probed without `subprocess` and without dependencies: `OpenProcess` +
+`GetExitCodeProcess` through `ctypes` on Windows, `os.kill(pid, 0)` on POSIX. A dead process
+keeps its checkpoint entry until the registry writes again — the plugin shows it as `bg_lost`
+("the registry missed the exit") instead of hiding it.
+
+In the chip the background layer has its own `⚙` group: cards and background never merge into one
+number, otherwise the source of a failure is unknown. Finished subagents never become rows; they
+only count in `done_6h`.
 
 ## States
 
@@ -73,6 +100,7 @@ The Python half is served by the gateway, so a plugin update needs a gateway res
 | `done_hours` | 6 | window of the "closed in the last N hours" counter |
 | `wait_days` | 14 | parked longer than this is stale |
 | `board_rows` | 100 | maximum number of rows in the snapshot |
+| `bg_rows` | 20 | maximum number of background rows in the snapshot |
 
 ## Language
 

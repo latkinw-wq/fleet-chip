@@ -25,6 +25,7 @@ DEFAULTS = {
     "done_hours": 6,
     "wait_days": 14,
     "board_rows": 100,
+    "bg_rows": 20,
 }
 
 # Всё, что читается из ``plugins.entries.fleet-chip.settings``: пороги + язык.
@@ -64,6 +65,16 @@ ROW_ORDER = ("lost", "never_model", "api_unknown", "running_silent", "blocked_as
 _ORDER = {state: pos for pos, state in enumerate(ROW_ORDER)}
 CHIP_KEYS = ("working", "running_silent", "never_model", "api_unknown", "not_started", "blocked_ask",
              "blocked_stale", "parked_stale", "lost", "blocked_wait", "parked")
+
+# Фоновые задачи (второй слой): процессы, которых держит terminal(background=true), и субагенты
+# из delegate_task. Живут в двух источниках: <profile home>/processes.json (чекпоинт реестра
+# процессов) и state.db → async_delegations. Состояния свои: у фона нет heartbeat и вызовов
+# модели, единственный честный сигнал — жив ли процесс и записано ли завершение.
+BG_ORDER = ("bg_lost", "bg_unknown", "bg_silent", "bg_running")
+BG_KEYS = ("bg_running", "bg_silent", "bg_lost", "bg_unknown")
+_BG_ORDER = {state: pos for pos, state in enumerate(BG_ORDER)}
+# Живые состояния записи субагента (tools/async_delegation._LIVE_STATES).
+_LIVE_DELEGATIONS = ("running", "stalling", "finalizing")
 
 
 def _home() -> Path:
@@ -398,6 +409,198 @@ def _cron(home: Path, now: float, errors: dict) -> dict:
     return {"jobs": len(jobs), "failing": failing, "delivery_failed_24h": failed_24h}
 
 
+def _profiles(home: Path) -> list:
+    """``('default', root)`` plus every ``profiles/<name>/`` that has a DB or a checkpoint."""
+    out = [("default", home)]
+    try:
+        for path in sorted((home / "profiles").iterdir()):
+            if path.is_dir() and ((path / "state.db").exists() or (path / "processes.json").exists()):
+                out.append((path.name, path))
+    except Exception:  # noqa: BLE001 — no profiles dir: the root home alone
+        pass
+    return out
+
+
+def _pid_alive(pid):
+    """True / False / None (cannot tell) — stdlib only: no psutil, no subprocess.
+
+    The checkpoint holds a PID, not a status: a process that died with its owner leaves the
+    record behind, and that leftover is exactly the case the chip has to show. ``None`` is
+    honest for a probe that failed (no ctypes, empty PID file), never a guess.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                # 5 = access denied: the process is alive but owned by someone else.
+                return True if ctypes.get_last_error() == 5 else False
+            try:
+                code = ctypes.c_ulong()
+                if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return None
+                return code.value == 259  # STILL_ACTIVE
+            finally:
+                k32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 — no ctypes: the state stays unknown
+            return None
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _age_min(now: float, stamp):
+    try:
+        return max((now - float(stamp)) / 60.0, 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _proc_hint(state: str, lang: str, pid, age) -> str:
+    if state == "bg_running":
+        if age is None:
+            return _t(lang, "bg_proc_running_noage", pid)
+        return _t(lang, "bg_proc_running", pid, age)
+    if state == "bg_lost":
+        return _t(lang, "bg_proc_lost", pid)
+    return _t(lang, "bg_proc_unknown", pid)
+
+
+def _processes(profile: str, home: Path, now: float, errors: dict, lang: str) -> list:
+    """Background processes of one profile home, straight from the registry checkpoint."""
+    path = home / "processes.json"
+    if not path.exists():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:  # noqa: BLE001 — a half-written checkpoint is a skipped source
+        _note(errors, path, exc)
+        return []
+    rows = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("pid")
+        alive = _pid_alive(pid)
+        state = "bg_running" if alive else "bg_unknown" if alive is None else "bg_lost"
+        age = _age_min(now, entry.get("started_at"))
+        command = str(entry.get("command") or "")
+        rows.append({
+            "kind": "proc",
+            "id": str(entry.get("session_id") or ""),
+            "profile": profile,
+            "state": state,
+            "title": _short(command, 90) or _t(lang, "bg_no_title"),
+            "age_min": None if age is None else round(age, 1),
+            "pid": pid,
+            "notify": bool(entry.get("notify_on_complete")),
+            "hint": _proc_hint(state, lang, pid, age),
+        })
+    return rows
+
+
+def _goal(task_json) -> str:
+    """First goal of a delegation's task record (batch delegations carry ``goals``)."""
+    try:
+        task = json.loads(task_json or "{}")
+    except Exception:  # noqa: BLE001 — a malformed record only loses the title
+        return ""
+    if not isinstance(task, dict):
+        return ""
+    goals = task.get("goals")
+    if isinstance(goals, list) and goals:
+        head = _short(str(goals[0]), 90)
+        return f"{head} (+{len(goals) - 1})" if len(goals) > 1 else head
+    return _short(str(task.get("goal") or ""), 90)
+
+
+def _agents(profile: str, home: Path, now: float, th: dict, errors: dict, conns: dict, lang: str):
+    """(rows, done_in_window) for one profile's delegated subagents."""
+    db = home / "state.db"
+    if not db.exists():
+        return [], 0
+    if db not in conns:
+        try:
+            conns[db] = _ro(db)
+        except Exception as exc:  # noqa: BLE001
+            _note(errors, db, exc)
+            conns[db] = None
+    con = conns[db]
+    if con is None:
+        return [], 0
+    try:
+        found = con.execute(
+            "SELECT delegation_id, state, dispatched_at, completed_at, task_json, owner_pid"
+            " FROM async_delegations").fetchall()
+    except Exception:  # noqa: BLE001 — older schema without the table: no agents, not an error
+        return [], 0
+    rows, done = [], 0
+    for rec in found:
+        completed = rec["completed_at"]
+        if completed:
+            if now - float(completed) <= th["done_hours"] * 3600:
+                done += 1
+            continue
+        raw = str(rec["state"] or "")
+        if raw in _LIVE_DELEGATIONS:
+            state = "bg_silent" if raw == "stalling" else "bg_running"
+            # The record says "live"; the owner process decides. A record whose owner is gone
+            # is the delegation twin of `lost`: the card clock stops, nothing ever completes it.
+            if _pid_alive(rec["owner_pid"]) is False:
+                state = "bg_lost"
+        else:
+            state = "bg_lost"
+        age = _age_min(now, rec["dispatched_at"])
+        hint = _t(lang, "bg_agent_running", age) if state == "bg_running" and age is not None \
+            else _t(lang, "bg_agent_stalled", age) if state == "bg_silent" and age is not None \
+            else _t(lang, "bg_agent_lost", raw or "?")
+        rows.append({
+            "kind": "agent",
+            "id": str(rec["delegation_id"] or ""),
+            "profile": profile,
+            "state": state,
+            "state_raw": raw,
+            "title": _goal(rec["task_json"]) or _t(lang, "bg_no_title"),
+            "age_min": None if age is None else round(age, 1),
+            "pid": rec["owner_pid"],
+            "notify": False,
+            "hint": hint,
+        })
+    return rows, done
+
+
+def _background(home: Path, now: float, th: dict, errors: dict, conns: dict, lang: str) -> dict:
+    """Every background process and delegated subagent this machine is running for us."""
+    rows, done = [], 0
+    for profile, phome in _profiles(home):
+        rows.extend(_processes(profile, phome, now, errors, lang))
+        got, done_n = _agents(profile, phome, now, th, errors, conns, lang)
+        rows.extend(got)
+        done += done_n
+    rows.sort(key=lambda row: (_BG_ORDER[row["state"]], -(row["age_min"] or 0.0)))
+    chip = {state: 0 for state in BG_KEYS}
+    for row in rows:
+        chip[row["state"]] += 1
+    chip["done_6h"] = done
+    return {"chip": chip, "rows": rows[: th["bg_rows"]]}
+
+
 def board(settings=None) -> dict:
     """The snapshot shared by the tool, ``/fleet`` and the ``/board`` route."""
     th = _thresholds(settings)
@@ -413,23 +616,26 @@ def board(settings=None) -> dict:
         got, done_n = _read_board(path, now, th, errors, conns, lang)
         rows.extend(got)
         done += done_n
+    rows.sort(key=lambda row: (_ORDER[row["state"]], -row["age_min"]))
+    chip = {state: 0 for state in CHIP_KEYS}
+    for row in rows:
+        chip[row["state"]] += 1
+    chip["done_6h"] = done
+    # Фон читается тем же пулом соединений, поэтому закрываем его уже после него.
+    background = _background(home, now, th, errors, conns, lang)
     for con in conns.values():
         if con is not None:
             try:
                 con.close()
             except Exception:  # noqa: BLE001
                 pass
-    rows.sort(key=lambda row: (_ORDER[row["state"]], -row["age_min"]))
-    chip = {state: 0 for state in CHIP_KEYS}
-    for row in rows:
-        chip[row["state"]] += 1
-    chip["done_6h"] = done
     return {
         "generated_at": now,
         "lang": lang,
         "chip": chip,
         "rows": rows[: th["board_rows"]],
         "cron": _cron(home, now, errors),
+        "background": background,
         "sources_errors": [{"path": path, "error": text} for path, text in errors.items()],
     }
 
@@ -437,6 +643,7 @@ def board(settings=None) -> dict:
 _MARKS = {"lost": "💥", "running_silent": "⏱", "never_model": "🧩", "not_started": "⏸",
           "blocked_ask": "⛔", "blocked_stale": "🧷", "blocked_wait": "💤",
           "parked": "🕗", "parked_stale": "🗓", "working": "🔄"}
+_BG_MARKS = {"bg_running": "⚙", "bg_silent": "⏳", "bg_lost": "👻", "bg_unknown": "❔"}
 
 
 def render_text(snapshot: dict) -> str:
@@ -453,6 +660,13 @@ def render_text(snapshot: dict) -> str:
         lines.append("   %s" % row["hint"])
     if not snapshot.get("rows"):
         lines.append(_t(lang, "render_empty"))
+    background = snapshot.get("background") or {}
+    bg_rows = background.get("rows") or []
+    if bg_rows:
+        lines.append(_t(lang, "render_bg_header", len(bg_rows)))
+        for row in bg_rows:
+            lines.append(_t(lang, "render_bg_row", _BG_MARKS.get(row["state"], "•"),
+                            row["profile"], row["title"]))
     cron = snapshot.get("cron") or {}
     tail = _t(lang, "render_cron", cron.get("jobs", 0))
     if cron.get("failing"):

@@ -12,7 +12,9 @@ SCHEMA = {
     "description": (
         "Snapshot of kanban worker and cron health: who is working, who is silent, "
         "who never reached the model (running + fresh heartbeat but api_call_count=0), "
-        "who is lost or blocked, and cron failures. Read-only."
+        "who is lost or blocked, and cron failures. Also background work: "
+        "terminal(background=true) processes and delegated subagents, live or with a "
+        "record left behind. Read-only."
     ),
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }

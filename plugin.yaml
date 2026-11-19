@@ -1,13 +1,14 @@
 name: fleet-chip
-version: "0.2.0"
+version: "0.3.0"
 manifest_version: 2
 api_version: 1
 kind: standalone
 description: >
-  Kanban workers + cron health in one read-only snapshot. Signature case: card in
-  running, fresh heartbeat, api_call_count = 0 — a worker that never reached the model.
+  Kanban workers, cron health, background processes and delegated subagents in one
+  read-only snapshot. Signature case: card in running, fresh heartbeat,
+  api_call_count = 0 — a worker that never reached the model.
 author: ""
-tags: [kanban, cron, monitoring, read-only]
+tags: [kanban, cron, monitoring, read-only, background]
 provides_tools:
   - fleet_status
 python_dependencies: []
@@ -45,3 +46,7 @@ config_schema:
     type: int
     default: 100
     description: "max rows in the snapshot"
+  bg_rows:
+    type: int
+    default: 20
+    description: "max background rows (processes + subagents) in the snapshot"

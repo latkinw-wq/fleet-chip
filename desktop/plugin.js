@@ -40,6 +40,10 @@ const PROBLEM_STATES = [
   'not_started'
 ]
 
+// Фон (процессы terminal(background=true) и субагенты delegate_task): у него нет heartbeat
+// и вызовов модели, поэтому состояния свои, а решение принимает backend.
+const BG_PROBLEM_STATES = ['bg_lost', 'bg_unknown', 'bg_silent']
+
 // Строки интерфейса. Язык приходит с backend (board.lang — из настроек плагина),
 // пока ответа нет — navigator.language; незнакомый язык даёт английский.
 // Подписи состояний живут только здесь: подсказки строк (hint) присылает backend
@@ -58,10 +62,18 @@ const TEXT = {
       parked: 'отложена',
       parked_stale: 'отложена давно',
       lost: 'умер',
-      done_recent: 'закрыта'
+      done_recent: 'закрыта',
+      bg_running: 'идёт',
+      bg_silent: 'залип',
+      bg_lost: 'нет процесса',
+      bg_unknown: 'не проверить'
     },
     untitled: '(без названия)',
     title: 'Приборка',
+    bgTitle: 'фон',
+    kindProc: 'процесс',
+    kindAgent: 'субагент',
+    bgEmpty: 'фоновых задач нет',
     loading: 'загрузка…',
     updated: when => `обновлено ${when}`,
     backendDown: 'backend недоступен — плагин не включён в plugins.enabled?',
@@ -81,6 +93,8 @@ const TEXT = {
     tipLive: (id, calls) => ` (${id}, ${calls} выз.)`,
     tipWait: n => `отложено: ${n}`,
     tipCron: (n, bad) => `кроны: ${n}, сбоев ${bad}`,
+    tipBg: (n, bad) => (bad ? `фон: ${n}, внимание ${bad}` : `фон: ${n}`),
+    bgDone: n => `фон закрыто: ${n}`,
     tipQuiet: 'всё тихо',
     tipHint: 'клик — приборка, правый клик — обновить'
   },
@@ -97,10 +111,18 @@ const TEXT = {
       parked: 'parked',
       parked_stale: 'parked long',
       lost: 'dead',
-      done_recent: 'closed'
+      done_recent: 'closed',
+      bg_running: 'running',
+      bg_silent: 'stalled',
+      bg_lost: 'no process',
+      bg_unknown: 'unprobeable'
     },
     untitled: '(untitled)',
     title: 'Fleet',
+    bgTitle: 'background',
+    kindProc: 'process',
+    kindAgent: 'subagent',
+    bgEmpty: 'no background tasks',
     loading: 'loading…',
     updated: when => `updated ${when}`,
     backendDown: 'backend unreachable — is the plugin in plugins.enabled?',
@@ -120,6 +142,8 @@ const TEXT = {
     tipLive: (id, calls) => ` (${id}, ${calls} calls)`,
     tipWait: n => `waiting: ${n}`,
     tipCron: (n, bad) => `cron: ${n}, failing ${bad}`,
+    tipBg: (n, bad) => (bad ? `background: ${n}, needs attention ${bad}` : `background: ${n}`),
+    bgDone: n => `background done: ${n}`,
     tipQuiet: 'all quiet',
     tipHint: 'click — the board, right click — refresh'
   }
@@ -154,11 +178,12 @@ const STATE_ORDER = [
 // Три группы вместо десяти состояний: в чипе глиф обозначает ГРУППУ, а не состояние.
 // Символы — монохромные (не эмодзи): ⏸/▶ имеют emoji-presentation и в статусбаре
 // красятся системным шрифтом (синий «пауза»), поэтому взяты текстовые ▸ и ‖.
-const BUCKET_GLYPH = { bad: '!', work: '▸', wait: '‖' }
+const BUCKET_GLYPH = { bad: '!', work: '▸', wait: '‖', bg: '⚙' }
 
 function bucketOf(state) {
   if (state === 'working') return 'work'
   if (state === 'blocked_wait' || state === 'parked') return 'wait'
+  if (String(state).startsWith('bg_')) return 'bg'
   return 'bad'
 }
 
@@ -172,19 +197,26 @@ function ageText(min, lang) {
   return m ? `${h} ${t.hour} ${m} ${t.min}` : `${h} ${t.hour}`
 }
 
+function isProblem(state) {
+  return PROBLEM_STATES.includes(state) || BG_PROBLEM_STATES.includes(state)
+}
+
 function counts(board) {
   const chip = (board && board.chip) || {}
   const problems = PROBLEM_STATES.reduce((n, s) => n + (chip[s] || 0), 0)
   const work = chip.working || 0
   const wait = (chip.blocked_wait || 0) + (chip.parked || 0)
-  return { chip, problems, work, wait }
+  // Фон живёт отдельным списком, а не в chip: у него свои состояния.
+  const bgRows = (board && board.background && board.background.rows) || []
+  const bgBad = bgRows.filter(r => BG_PROBLEM_STATES.includes(r.state)).length
+  return { chip, problems, work, wait, bg: bgRows.length, bgBad }
 }
 
 // Тултип бесплатен по ширине, поэтому вся детализация живёт здесь, а чип молчит.
 function tipText(board, error, lang) {
   const t = text(lang)
   if (!board) return error ? `fleet-chip: ${error}` : `fleet-chip: ${t.loading}`
-  const { problems, work, wait } = counts(board)
+  const { problems, work, wait, bg, bgBad } = counts(board)
   const rows = board.rows || []
   const parts = []
   const bad = rows.filter(r => PROBLEM_STATES.includes(r.state)).slice(0, 3)
@@ -196,9 +228,10 @@ function tipText(board, error, lang) {
     parts.push(t.tipWorking(work, live ? t.tipLive(live.id, live.api_calls ?? '?') : ''))
   }
   if (wait) parts.push(t.tipWait(wait))
+  if (bg) parts.push(t.tipBg(bg, bgBad))
   const cron = board.cron || {}
   parts.push(t.tipCron(cron.jobs || 0, (cron.failing || []).length))
-  if (!problems && !work && !wait) parts.unshift(t.tipQuiet)
+  if (!problems && !work && !wait && !bg) parts.unshift(t.tipQuiet)
   parts.push(t.tipHint)
   return parts.join(' · ')
 }
@@ -240,7 +273,7 @@ function useFleet(rest) {
 }
 
 function StatePill({ state, lang }) {
-  const problem = PROBLEM_STATES.includes(state)
+  const problem = isProblem(state)
   const t = text(lang)
   return jsxs('span', {
     className: cn(
@@ -255,7 +288,7 @@ function StatePill({ state, lang }) {
 }
 
 function Row({ row, lang }) {
-  const problem = PROBLEM_STATES.includes(row.state)
+  const problem = isProblem(row.state)
   const t = text(lang)
   return jsxs('div', {
     className: cn(
@@ -295,6 +328,46 @@ function Row({ row, lang }) {
   })
 }
 
+function BgRow({ row, lang }) {
+  const problem = isProblem(row.state)
+  const t = text(lang)
+  return jsxs('div', {
+    className: cn(
+      'grid grid-cols-[9rem_1fr_auto] items-baseline gap-2 border-b border-(--ui-stroke-secondary) py-1.5 text-[0.75rem] last:border-b-0'
+    ),
+    children: [
+      jsxs('div', {
+        className: 'flex min-w-0 flex-col gap-0.5',
+        children: [
+          jsx('span', {
+            className: cn('truncate font-mono text-[0.6875rem]', problem ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'),
+            children: row.id || '—'
+          }),
+          jsx(StatePill, { state: row.state, lang })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex min-w-0 flex-col gap-0.5',
+        children: [
+          jsx('span', { className: 'truncate text-foreground', children: row.title || t.untitled }),
+          jsx('span', {
+            className: 'truncate text-(--ui-text-quaternary)',
+            children: [
+              row.kind === 'agent' ? t.kindAgent : t.kindProc,
+              ` · ${row.profile || 'default'}`,
+              row.hint ? ` · ${row.hint}` : ''
+            ].join('')
+          })
+        ]
+      }),
+      jsx('span', {
+        className: 'shrink-0 text-(--ui-text-quaternary) tabular-nums',
+        children: ageText(row.age_min, lang)
+      })
+    ]
+  })
+}
+
 function Panel({ board, error, at, refresh, onClose, lang }) {
   const t = text(lang)
   const rows = ((board && board.rows) || []).slice().sort(
@@ -302,6 +375,8 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
   )
   const cron = (board && board.cron) || {}
   const srcErrors = (board && board.sources_errors) || []
+  const bgRows = ((board && board.background && board.background.rows) || []).slice()
+  const bgChip = (board && board.background && board.background.chip) || {}
 
   return jsxs('div', {
     className: cn(
@@ -344,12 +419,40 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
       }),
       jsx('div', {
         className: 'min-h-0 flex-1 overflow-auto px-3 py-1',
-        children: rows.length
-          ? rows.map(r => jsx(Row, { row: r, lang }, r.id))
-          : jsx('div', {
-              className: 'py-6 text-center text-[0.75rem] text-(--ui-text-quaternary)',
-              children: error ? t.backendDown : t.empty
-            })
+        children: [
+          rows.length
+            ? jsx('div', { key: 'cards', children: rows.map(r => jsx(Row, { row: r, lang }, r.id)) })
+            : jsx('div', {
+                key: 'cards',
+                className: 'py-6 text-center text-[0.75rem] text-(--ui-text-quaternary)',
+                children: error ? t.backendDown : t.empty
+              }),
+          jsxs('div', {
+            key: 'bg',
+            className: 'mt-2 border-t border-(--ui-stroke-secondary) pt-1',
+            children: [
+              jsxs('div', {
+                key: 'h',
+                className: 'flex items-center gap-2 py-1 text-[0.6875rem] text-(--ui-text-quaternary)',
+                children: [
+                  jsx('span', { className: 'font-mono', children: BUCKET_GLYPH.bg }),
+                  jsx('span', { children: t.bgTitle }),
+                  jsx('span', { className: 'tabular-nums', children: bgRows.length })
+                ]
+              }),
+              bgRows.length
+                ? jsx('div', {
+                    key: 'rows',
+                    children: bgRows.map(r => jsx(BgRow, { row: r, lang }, `${r.profile}:${r.id}`))
+                  })
+                : jsx('div', {
+                    key: 'empty',
+                    className: 'pb-2 text-[0.6875rem] text-(--ui-text-quaternary)',
+                    children: t.bgEmpty
+                  })
+            ]
+          })
+        ]
       }),
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-(--ui-stroke-secondary) px-3 py-1.5 text-[0.6875rem] text-(--ui-text-quaternary)',
@@ -360,6 +463,17 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
             children: t.failing((cron.failing || []).length)
           }),
           jsx('span', { children: t.delivery(cron.delivery_failed_24h || 0) }),
+          bgRows.length
+            ? jsx('span', {
+                className: bgRows.some(r => BG_PROBLEM_STATES.includes(r.state))
+                  ? 'text-(--ui-accent)'
+                  : undefined,
+                children: t.tipBg(bgRows.length, bgRows.filter(r => BG_PROBLEM_STATES.includes(r.state)).length)
+              })
+            : null,
+          bgChip.done_6h
+            ? jsx('span', { children: t.bgDone(bgChip.done_6h) })
+            : null,
           srcErrors.length
             ? jsx('span', { className: 'text-(--ui-accent)', children: t.sources(srcErrors.length) })
             : null
@@ -372,7 +486,7 @@ function Panel({ board, error, at, refresh, onClose, lang }) {
 function Chip({ rest }) {
   const { board, error, at, refresh } = useFleet(rest)
   const [open, setOpen] = useState(false)
-  const { problems, work, wait } = counts(board)
+  const { problems, work, wait, bg, bgBad } = counts(board)
   const lang = langOf(board)
 
   const onClick = () => {
@@ -380,15 +494,19 @@ function Chip({ rest }) {
     setOpen(v => !v)
   }
 
-  // Компактная подпись: три группы, нули не печатаются, порядок фиксирован.
+  // Компактная подпись: группы, нули не печатаются, порядок фиксирован.
   //   всё тихо              → fleet
   //   работают              → fleet ▸1
   //   проблемы              → fleet !2   (акцентом)
-  //   всё сразу             → fleet !1 ▸2 ‖1
+  //   фон                   → fleet ⚙1   (акцентом, если в фоне сбой)
+  //   всё сразу             → fleet !1 ▸2 ‖1 ⚙1
+  // Карточки и фон считаются раздельно: у фона нет heartbeat и вызовов модели,
+  // поэтому его цифра не сливается с карточками — иначе не понять, где именно сбой.
   const groups = [
     { key: 'bad', n: problems },
     { key: 'work', n: work },
-    { key: 'wait', n: wait }
+    { key: 'wait', n: wait },
+    { key: 'bg', n: bg }
   ].filter(g => g.n > 0)
 
   return jsxs('span', {
@@ -405,7 +523,7 @@ function Chip({ rest }) {
           },
           className: cn(
             'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] transition-colors',
-            problems ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)',
+            problems || bgBad ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)',
             'hover:bg-(--chrome-action-hover) hover:text-foreground'
           ),
           children: jsxs('span', {
@@ -417,7 +535,7 @@ function Chip({ rest }) {
                     className: 'inline-flex items-baseline gap-1.5 tabular-nums',
                     children: groups.map(g =>
                       jsxs('span', {
-                        className: g.key === 'bad' ? 'font-medium' : undefined,
+                        className: (g.key === 'bad' || (g.key === 'bg' && bgBad)) ? 'font-medium' : undefined,
                         children: [
                           jsx('span', { className: 'font-mono opacity-70', children: BUCKET_GLYPH[g.key] }),
                           jsx('span', { children: String(g.n) })
