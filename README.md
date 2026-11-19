@@ -23,9 +23,9 @@ exception.
 
 ## Background: processes and subagents
 
-A separate layer. What Desktop shows in one session's composer status stack, this collects
-across every profile at once. A background row is `kind` (`proc` or `agent`), `profile`,
-`state`, `age_min`, `hint`.
+Desktop shows background work per session in the composer status stack; the plugin collects it
+across every profile at once. A background row is `kind` (`proc` or `agent`), `profile`, `state`,
+`age_min`, `hint`.
 
 Background work has no heartbeat and no model-call counter; the only honest signal is whether the
 process is alive:
@@ -37,17 +37,17 @@ process is alive:
 | `bg_lost` | the process is gone but its record stayed; or a subagent record never completed and its owner died | yes |
 | `bg_unknown` | no PID recorded or it cannot be probed — "not sure", never "working" | yes |
 
-Liveness is probed without `subprocess` and without dependencies: `OpenProcess` +
-`GetExitCodeProcess` through `ctypes` on Windows, `os.kill(pid, 0)` on POSIX. A dead process
-keeps its checkpoint entry until the registry writes again — the plugin shows it as `bg_lost`
-("the registry missed the exit") instead of hiding it.
+Liveness is checked without `subprocess` and without dependencies: `OpenProcess` +
+`GetExitCodeProcess` through `ctypes` on Windows, `os.kill(pid, 0)` on POSIX. A dead process keeps
+its checkpoint entry until the registry writes again, and the plugin reports it as `bg_lost` —
+the registry missed the exit.
 
 In the chip subagents and processes get their own groups with the same icons the composer status
 stack draws: `codicon-agent` (the hexagon) and `codicon-server-process` (the folder with a gear).
-Those are Hermes Desktop's own codicons — `@vscode/codicons` is loaded globally by the app, so the
-plugin uses the same classes instead of copying SVGs. Cards, subagents and processes never merge
-into one number, otherwise the source of a failure is unknown. Finished subagents never become
-rows; they only count in `done_6h`.
+Those are Hermes Desktop's own codicons: `@vscode/codicons` is loaded globally by the app, so the
+plugin uses the same classes rather than copying SVGs. Each group keeps its own counter, so a
+failure's source is visible at a glance. Finished subagents never become rows; they only count in
+`done_6h`.
 
 ## States
 
