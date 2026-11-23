@@ -74,11 +74,13 @@ that exit with code 1 after finding a problem are delivered, not failing.
 ## Install
 
 ```bash
-git clone https://github.com/latkinw-wq/fleet-chip.git
+git clone --branch v0.3.0 --depth 1 https://github.com/latkinw-wq/fleet-chip.git
 cp -r fleet-chip ~/.hermes/plugins/fleet-chip
 mkdir -p ~/.hermes/desktop-plugins/fleet-chip
 cp fleet-chip/desktop/plugin.js ~/.hermes/desktop-plugins/fleet-chip/
 ```
+
+Drop `--branch` to track `main` instead of the release.
 
 Then add `fleet-chip` to `plugins.enabled` in `~/.hermes/config.yaml` and restart Hermes Desktop.
 The Python half is served by the gateway, so a plugin update needs a gateway restart as well.

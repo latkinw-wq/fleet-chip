@@ -73,11 +73,13 @@ Desktop. Клик по чипу открывает панель со списк�
 ## Установка
 
 ```bash
-git clone https://github.com/latkinw-wq/fleet-chip.git
+git clone --branch v0.3.0 --depth 1 https://github.com/latkinw-wq/fleet-chip.git
 cp -r fleet-chip ~/.hermes/plugins/fleet-chip
 mkdir -p ~/.hermes/desktop-plugins/fleet-chip
 cp fleet-chip/desktop/plugin.js ~/.hermes/desktop-plugins/fleet-chip/
 ```
+
+Без `--branch` клонируется `main`, а не зафиксированный выпуск.
 
 Добавить `fleet-chip` в `plugins.enabled` в `~/.hermes/config.yaml` и перезапустить Hermes
 Desktop. Python-половину обслуживает gateway, поэтому обновление плагина требует ещё и
