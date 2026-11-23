@@ -6,6 +6,8 @@ chip in the Hermes Desktop status bar. Click the chip for the full board, right 
 The failure mode it catches: a card in `running` with a live heartbeat whose session has
 `api_call_count = 0` — a worker process is up, but it never reached the model.
 
+![The Fleet panel: one card asking for a decision, one working, one parked, and one background process. Below it, the status-bar chip carries the same counters](docs/fleet-panel.png)
+
 ## What it reads
 
 Every source is opened read-only (`file:<path>?mode=ro`): no writes, no network, no extra
